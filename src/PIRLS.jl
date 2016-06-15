@@ -205,7 +205,6 @@ Optimize the objective function for `m`
 function StatsBase.fit!(m::GeneralizedLinearMixedModel, verbose::Bool=false, optimizer::Symbol=:LN_BOBYQA)
     β, lm = m.β, m.LMM
     βθ = vcat(β, getθ(lm))
-#    @show(βθ)
     opt = NLopt.Opt(optimizer, length(βθ))
     NLopt.ftol_rel!(opt, 1e-12)   # relative criterion on deviance
     NLopt.ftol_abs!(opt, 1e-8)    # absolute criterion on deviance
