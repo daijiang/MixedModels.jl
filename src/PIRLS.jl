@@ -34,13 +34,11 @@ type GeneralizedLinearMixedModel{T <: AbstractFloat, D <: UnivariateDistribution
     b::Vector{Matrix{T}}
     u::Vector{Matrix{T}}
     u₀::Vector{Matrix{T}}
-    X::Matrix{T}
     y::Vector{T}
     μ::Vector{T}
     η::Vector{T}
     devresid::Vector{T}
     offset::Vector{T}
-    offset₀::Vector{T}
     wrkresid::Vector{T}
     wrkwt::Vector{T}
     wt::Vector{T}
@@ -64,21 +62,8 @@ function glmm(f::Formula, fr::AbstractDataFrame, d::Distribution, l::Link; wt=[]
     LMM = lmm(f, fr; weights = wts)
     A, R, trms, u, y = LMM.A, LMM.R, LMM.trms, ranef(LMM), copy(model_response(LMM))
     wts = oftype(y, wts)
-    kp1 = length(LMM.Λ) + 1
-    X = trms[kp1]
-            # zero the dimension of the fixed-effects in trms, A and R
-    trms[kp1] = zeros(length(y), 0)
-    LMM.wttrms[kp1] = trms[kp1]
-    for i in 1:kp1
-        qi = size(trms[i], 2)
-        A[i, kp1] = zeros((qi, 0))
-        R[i, kp1] = zeros((qi, 0))
-    end
-    qend = size(trms[end], 2)  # should always be 1 but no harm in extracting it
-    A[kp1, end] = zeros((0, qend))
-    R[kp1, end] = zeros((0, qend))
             # fit a glm to the fixed-effects only
-    gl = glm(X, y, d, l; wts = wts)
+    gl = glm(LMM.trms[end - 1], y, d, l; wts = wts)
     r = gl.rr
     res = GeneralizedLinearMixedModel(LMM, d, l, coef(gl), getθ(LMM), deepcopy(u), u, map(zeros, u),
         X, y, r.mu, r.eta, r.devresid, copy(r.eta), oftype(y, offset), r.wrkresid, r.wrkwt, wts)
@@ -131,24 +116,6 @@ function StatsBase.loglikelihood{T,D}(m::GeneralizedLinearMixedModel{T,D})
 end
 
 lowerbd(m::GeneralizedLinearMixedModel) = vcat(fill(-Inf, size(m.β)), lowerbd(m.LMM))
-
-function restoreX!(m::GeneralizedLinearMixedModel)
-    if !isempty(m.LMM.R[end - 1, end - 1])
-        return m
-    end
-    lm, X = m.LMM, m.X
-    A, R, trms, k = lm.A, lm.R, lm.trms, length(lm.Λ)
-    kp1 = k + 1
-    trms[kp1] = X
-    lm.wttrms[kp1] = copy(X)
-    for i in 1 : kp1
-        A[i, kp1] = trms[i]'X
-        R[i, kp1] = copy(A[i, kp1])
-    end
-    A[kp1, end] = X'trms[end]
-    R[kp1, end] = copy(A[kp1, end])
-    reweight!(lm, m.wrkwt)
-end
 
 """
     updateη!(m::GeneralizedLinearMixedModel)
@@ -220,7 +187,7 @@ Set the parameter vector, `:βθ`, of `m` to `v`.
 `βθ` is the concatenation of the fixed-effects, `β`, and the covariance parameter, `θ`.
 """
 function setβθ!{T}(m::GeneralizedLinearMixedModel{T}, v::Vector{T})
-    β, lm, offset, offset₀, X = m.β, m.LMM, m.offset, m.offset₀, m.X
+    β, lm, offset, X = m.β, m.LMM, m.offset, m.offset₀, m.X
     lb = length(β)
     copy!(β, view(v, 1 : lb))
     setθ!(m.LMM, copy!(m.θ, view(v, (lb + 1) : length(v))))
@@ -238,7 +205,6 @@ Optimize the objective function for `m`
 function StatsBase.fit!(m::GeneralizedLinearMixedModel, verbose::Bool=false, optimizer::Symbol=:LN_BOBYQA)
     β, lm = m.β, m.LMM
     βθ = vcat(β, getθ(lm))
-#    @show(βθ)
     opt = NLopt.Opt(optimizer, length(βθ))
     NLopt.ftol_rel!(opt, 1e-12)   # relative criterion on deviance
     NLopt.ftol_abs!(opt, 1e-8)    # absolute criterion on deviance
