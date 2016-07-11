@@ -92,7 +92,7 @@ unscaledre!(y::AbstractVector, M::VectorReMat, L::LowerTriangular) =
 
 """
     simulate!(m::LinearMixedModel; β=fixef(m), σ=sdest(m), θ=m[:θ])
-Install a simulated response vector in model `m` and refit it.
+Create a simulated response vector from model `m`.
 """
 function simulate!{T}(m::LinearMixedModel{T}; β = coef(m), σ = sdest(m), θ = T[])
     if !isempty(θ)
@@ -105,7 +105,6 @@ function simulate!{T}(m::LinearMixedModel{T}; β = coef(m), σ = sdest(m), θ = 
     end
                                   # scale by σ and add fixed-effects contribution
     BLAS.gemv!('N', 1.0, trms[end - 1], β, σ, y)
-    m |> reevaluateAend! |> resetθ! |> cfactor! |>  fit!
 end
 
 """
