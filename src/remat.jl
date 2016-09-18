@@ -35,7 +35,7 @@ The representation of the model matrix for a vector-valued random-effects term
 * `cnms`: a `Vector` of column names (row names after transposition) of `z`
 """
 immutable VectorReMat{T <: AbstractFloat} <: ReMat
-    f::Union{CategoricalVector,PooledDataVector}
+    f::CategoricalVector
     z::Matrix{T}
     fnm::Symbol
     cnms::Vector
@@ -67,7 +67,7 @@ end
 Base.eltype(R::ReMat) = eltype(R.z)
 
 function Base.copy!(d::CategoricalVector, s::CategoricalVector)
-    levels!(d, CategoricalArrays.levels(s))
+    levels!(d, levels(s))
     copy!(d.refs, s.refs)
     d
 end
