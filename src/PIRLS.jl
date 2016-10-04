@@ -66,9 +66,10 @@ function glmm(f::Formula, fr::AbstractDataFrame, d::Distribution, l::Link; wt=[]
     gl = glm(LMM.trms[end - 1], y, d, l; wts = wts)
     r = gl.rr
     res = GeneralizedLinearMixedModel(LMM, d, l, coef(gl), getθ(LMM), deepcopy(u), u, map(zeros, u),
-        X, y, r.mu, r.eta, r.devresid, copy(r.eta), oftype(y, offset), r.wrkresid, r.wrkwt, wts)
-    setβθ!(res, vcat(coef(gl), getθ(LMM)))
-    LaplaceDeviance!(res)
+        X, y, r.mu, r.eta, r.devresid, copy(r.eta), oftype(y, offset), r.wrkresid, r.wrkwt,
+        oftype(y, wt))
+    wrkresp!(trms[end], res)
+    reweight!(LMM, res.wrkwt)
     res
 end
 
