@@ -11,7 +11,7 @@ Members:
 - `b`: similar to `u`, equivalent to `broadcast!(*, b, LMM.Λ, u)`
 - `u`: a vector of matrices of random effects
 - `u₀`: similar to `u`.  Used in the PIRLS algorithm if step-halving is necessary.
-- `resp`: a `GLM.GlmResp` object
+- `resp`: a `GlmResp` object
 """
 
 type GeneralizedLinearMixedModel{T<:AbstractFloat} <: MixedModel
