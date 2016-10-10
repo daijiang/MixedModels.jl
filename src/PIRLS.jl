@@ -7,22 +7,27 @@ Members:
 
 - `LMM`: a [`LinearMixedModel`](@ref) - used for the random effects only.
 - `β`: the fixed-effects vector
+- `β₀`: similar to `β`,  Used in the PIRLS algorithm if step-halving is necessary.
 - `θ`: covariance parameter vector
+- `η`: linear predictor w/o offset (also used as scratch storage)
 - `b`: similar to `u`, equivalent to `broadcast!(*, b, LMM.Λ, u)`
 - `u`: a vector of matrices of random effects
 - `u₀`: similar to `u`.  Used in the PIRLS algorithm if step-halving is necessary.
 - `resp`: a `GLM.GlmResp` object
+- `logd`: a copy of the logdet(LMM) with unit weights
 """
 
 type GeneralizedLinearMixedModel{T<:AbstractFloat} <: MixedModel
     LMM::LinearMixedModel{T}
     β::Vector{T}
+    β₀::Vector{T}
     θ::Vector{T}
     η::Vector{T}
     b::Vector{Matrix{T}}
     u::Vector{Matrix{T}}
     u₀::Vector{Matrix{T}}
     resp::GLM.GlmResp
+    logd::T
 end
 
 fixef(m::GeneralizedLinearMixedModel) = m.β
@@ -41,12 +46,15 @@ function glmm(f::Formula, fr::AbstractDataFrame, d::Distribution, l::Link; wt=[]
     wts = isempty(wt) ? ones(nrow(fr)) : Array(wt)
         # the weights argument is forced to be non-empty in the lmm as it will be used later
     LMM = lmm(f, fr; weights = wts)
-    y, u = copy(model_response(LMM)), ranef(LMM)
+    setθ!(LMM, getθ(LMM))   # force a decomposition
+    y, u = copy(model_response(LMM)), ranef(LMM, uscale=true)
     wts = oftype(y, wts)
             # fit a glm to the fixed-effects only
-    gl = glm(copy(LMM.trms[end - 1]), y, d, l; wts = wts)
-    res = GeneralizedLinearMixedModel(LMM, coef(gl), getθ(LMM), similar(y),
-        zeros.(u), u, zeros.(u), gl.rr)
+    gl = glm(LMM.wttrms[end - 1], y, d, l; wts = wts)
+    β = coef(gl)
+    reweight!(LMM, gl.rr.wrkwt)
+    res = GeneralizedLinearMixedModel(LMM, β, similar(β), getθ(LMM), similar(y),
+        zeros.(u), u, zeros.(u), gl.rr, logdet(LMM))
     LaplaceDeviance!(res)
     res
 end
@@ -56,7 +64,7 @@ glmm(f::Formula, fr::AbstractDataFrame, d::Distribution) = glmm(f, fr, d, GLM.ca
 Base.logdet{T}(m::GeneralizedLinearMixedModel{T}) = logdet(m.LMM)
 
 """
-    LaplaceDeviance{T,D}(m::GeneralizedLinearMixedModel{T,D})
+    LaplaceDeviance(m::GeneralizedLinearMixedModel)
 
 Return the Laplace approximation to the deviance of `m`.
 
@@ -64,8 +72,8 @@ If the distribution `D` does not have a scale parameter the Laplace approximatio
 is defined as the squared length of the conditional modes, `u`, plus the determinant
 of `Λ'Z'ZΛ + 1`, plus the sum of the squared deviance residuals.
 """
-LaplaceDeviance{T}(m::GeneralizedLinearMixedModel{T}) =
-    sum(m.resp.devresid) + logdet(m) + mapreduce(sumabs2, +, m.u)
+LaplaceDeviance(m::GeneralizedLinearMixedModel) =
+    sum(m.resp.devresid) + m.logd + mapreduce(sumabs2, +, m.u)
 
 """
     LaplaceDeviance!(m::GeneralizedLinearMixedModel)
@@ -75,9 +83,9 @@ Update `m.η`, `m.μ`, etc., install the working response and working weights in
 """
 function LaplaceDeviance!(m::GeneralizedLinearMixedModel)
     updateη!(m)
-    GLM.updateμ!(m.resp)
-    GLM.wrkresp!(vec(m.LMM.trms[end]), m.resp)
-    reweight!(m.LMM, m.resp.wrkwt)
+    GLM.wrkresp(vec(m.LMM.trms[end]), GLM.updateμ!(m.resp, m.η))
+    #    GLM.wrkresp!(vec(m.LMM.trms[end]), m.resp)
+    reevaluateAend!(m.LMM)
     LaplaceDeviance(m)
 end
 
@@ -118,19 +126,27 @@ end
     pirls!(m::GeneralizedLinearMixedModel)
 
 Use Penalized Iteratively Reweighted Least Squares (PIRLS) to determine the conditional
-modes of the random effects.
+modes of the random effects and, optionally, the conditional estimates of the fixed-effects.
 """
 function pirls!{T}(m::GeneralizedLinearMixedModel{T})
-    iter, maxiter, obj = 0, 100, T(-Inf)
-    u₀, u = m.u₀, m.u
-    for j in eachindex(u)         # start from u all zeros
-        copy!(u₀[j], fill!(u[j], 0))
+    iter, maxiter, obj = 0, 10, T(-Inf)
+    β₀, β, u₀, u = m.β₀, m.β, m.u₀, m.u
+    reweight!(m.LMM, m.resp.wrkwt)
+    fill!(β, 0)
+    copy!(β₀, β)
+    for i in eachindex(u)
+        fill!(u[i], 0)
+        fill!(u₀[i], 0)
     end
-    obj₀ = LaplaceDeviance!(m) * 1.0001
+    obj₀ = LaplaceDeviance!(m)
+    @show obj₀
     while iter < maxiter
         iter += 1
-        ranef!(u, m.LMM, true)    # solve for new values of u
-        obj = LaplaceDeviance!(m) # update GLM vecs and evaluate Laplace approx
+        fixef!(β, m.LMM, true)
+        ranef!(u, β, m.LMM, true)      # solve for new values of u        @show u
+        @show iter, extrema(β), map(extrema, u)
+        obj = LaplaceDeviance!(m)      # update GLM vecs and evaluate Laplace approx
+        @show obj
         nhalf = 0
         while obj > obj₀
             nhalf += 1
@@ -140,23 +156,26 @@ function pirls!{T}(m::GeneralizedLinearMixedModel{T})
                 end
                 break
             end
+            map!(+, β, β₀)
+            β ./= 2
             for i in eachindex(u)
                 ui = u[i]
                 ui₀ = u₀[i]
                 for j in eachindex(ui)
                     ui[j] += ui₀[j]
-                    ui[j] *= 0.5
+                    ui[j] /= 2
                 end
             end
             obj = LaplaceDeviance!(m)
+            @show obj, nhalf
         end
         if isapprox(obj, obj₀; atol = 0.0001)
             break
         end
-        for i in eachindex(u)
-            copy!(u₀[i], u[i])
-        end
+        copy!(β₀, β)
+        broadcast(copy!, u₀, u)
         obj₀ = obj
+        reweight!(m.LMM, m.resp.wrkwt)
     end
     obj
 end
@@ -260,7 +279,7 @@ function Base.show{T}(io::IO, m::GeneralizedLinearMixedModel{T}) # not tested
 
     show(io,VarCorr(m))
     gl = grplevels(m.LMM)
-    print(io, "\n Number of obs: ", length(m.y), "; levels of grouping factors: ", gl[1])
+    print(io, "\n Number of obs: ", length(m.η), "; levels of grouping factors: ", gl[1])
     for l in gl[2:end]
         print(io, ", ", l)
     end

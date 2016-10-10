@@ -105,26 +105,23 @@ function grplevels(m::MixedModel)
 end
 
 """
-    ranef!{T}(v::Vector{Matrix{T}}, m::MixedModel{T}, uscale::Bool)
+ranef!{T}(v::Vector{Matrix{T}}, m::MixedModel{T}, uscale::Bool)
 
-Overwrites `v` with the conditional modes of the random effects for `m`.
+Overwrites `v` with the conditional modes of the random effects for `m` given a fixed-effects
+parameter vector `β`.
 
 If `uscale` is `true` the random effects are on the spherical (i.e. `u`) scale, otherwise on the
 original scale
 """
-function ranef!(v::Vector, m::MixedModel, uscale::Bool)
+function ranef!{T<:AbstractFloat}(v::Vector{Matrix{T}}, β::Vector{T}, m::MixedModel, uscale::Bool)
     R, Λ = m.R, m.Λ
-    k = length(Λ)        # number of random-effects terms
-    for j in 1:k
-        copy!(v[j], R[j, end])
+    if (k = length(Λ)) != length(v)
+        throw(DimensionMismatch("length(v) = $(length(v)) should be $j"))
     end
-    rβ = R[k + 1, end]
-    if !isempty(rβ)      #  in the pirls! function for GLMMs want to skip this
-        β = vec(feR(m) \ rβ)
-        kp1 = k + 1
-        for j in 1:k     # subtract the fixed-effects contribution
-            BLAS.gemv!('N', -1.0, R[j, kp1], β, 1.0, vec(v[j]))
-        end
+    kp1 = k + 1
+    for j in eachindex(v)
+        copy!(v[j], R[j, end])
+        BLAS.gemv!('N', -1.0, R[j, kp1], β, 1.0, vec(v[j]))
     end
     for j in k:-1:1
         Rjj = R[j, j]
@@ -143,13 +140,16 @@ function ranef!(v::Vector, m::MixedModel, uscale::Bool)
     v
 end
 
+ranef!{T<:AbstractFloat}(v::Vector{Matrix{T}}, m::MixedModel, uscale::Bool) =
+    ranef!(v, feR(m) \ vec(copy(m.R[end - 1, end])), m, uscale)
+
 """
-    ranef{T}(m::MixedModel{T}, uscale=false)
+    ranef{T}(m::MixedModel{T}, uscale=false, named=false)
 
 Returns, as a `Vector{Matrix{T}}`, the conditional modes of the random effects in model `m`.
 
 If `uscale` is `true` the random effects are on the spherical (i.e. `u`) scale, otherwise on the
-original scale.
+original scale.  If `named` is true the result is a vector of `NamedArrays`
 """
 function ranef(m::MixedModel; uscale=false, named=false)
     lm = lmm(m)
