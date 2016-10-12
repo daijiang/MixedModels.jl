@@ -29,7 +29,7 @@ end
 Reevaluate the last column of `m.A` from `m.trms`.  This function should be called
 after updating the response, `m.trms[end]`.
 """
-function reevaluateAend!(m::LinearMixedModel)
+function reevaluateAend!(m::LinearMixedModel, Ralso::Bool=false)
     A, trms, sqrtwts, wttrms = m.A, m.trms, m.sqrtwts, m.wttrms
     wttrmn = wttrms[end]
     if !isempty(sqrtwts)

@@ -390,15 +390,9 @@ Update `m.sqrtwts` from `wts` and `m.wttrms` from `m.trms`.  Recompute `m.A` and
 function reweight!{T}(m::LinearMixedModel{T}, weights::Vector{T})
     A, wttrms, trms, sqrtwts = m.A, m.wttrms, m.trms, m.sqrtwts
        # should be able to use map!(sqrt, sqrtwts.diag, weights) but that allocates storage in v0.4
-    d = sqrtwts.diag
-    if length(weights) ≠ length(d)
-        throw(DimensionMismatch("length(weights) = $(length(weights)), should be $(length(d))"))
-    end
-    for i in eachindex(d)
-        d[i] = sqrt(weights[i])
-    end
+    map!(sqrt, sqrtwts.diag, weights)
     for j in eachindex(trms)
-        A_mul_B!(sqrtwts, copy!(wttrms[j], trms[j]))
+        A_mul_B!(wttrms[j], sqrtwts, trms[j])
     end
     for j in 1 : size(A, 2), i in 1 : j
         Ac_mul_B!(A[i, j], wttrms[i], wttrms[j])
