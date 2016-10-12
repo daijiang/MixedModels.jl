@@ -67,7 +67,7 @@ end
 Base.eltype(R::ReMat) = eltype(R.z)
 
 function Base.copy!(d::CategoricalVector, s::CategoricalVector)
-    levels!(d, levels(s))
+    levels!(d, CategoricalArrays.levels(s))
     copy!(d.refs, s.refs)
     d
 end

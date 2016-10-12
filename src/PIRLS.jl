@@ -14,7 +14,6 @@ Members:
 - `u`: a vector of matrices of random effects
 - `u₀`: similar to `u`.  Used in the PIRLS algorithm if step-halving is necessary.
 - `resp`: a `GLM.GlmResp` object
-- `logd`: a copy of the logdet(LMM) with unit weights
 """
 
 immutable GeneralizedLinearMixedModel{T<:AbstractFloat} <: MixedModel
@@ -53,6 +52,10 @@ function glmm(f::Formula, fr::AbstractDataFrame, d::Distribution, l::Link; wt=[]
     β = coef(gl)
     res = GeneralizedLinearMixedModel(LMM, β, copy(β), getθ(LMM), similar(y),
         zeros.(u), u, copy.(u), gl.rr)
+    pdev!(res)
+    wrkresp(vec(res.LMM.trms[end]), res.resp)
+    reweight!(res.LMM, res.resp.wrkwt)
+    pirls!(res)
     res
 end
 
@@ -72,7 +75,7 @@ of `Λ'Z'ZΛ + 1`, plus the sum of the squared deviance residuals.
 LaplaceDeviance(m::GeneralizedLinearMixedModel) =
     sum(m.resp.devresid) + logdet(m) + mapreduce(sumabs2, +, m.u)
 
-function pdev(m::GeneralizedLinearMixedModel)
+function pdev!(m::GeneralizedLinearMixedModel)
     updateμ!(updateη!(m).resp)
     sum(m.resp.devresid) + mapreduce(sumabs2, +, m.u)
 end
@@ -136,11 +139,11 @@ function pirls!{T}(m::GeneralizedLinearMixedModel{T})
     β₀, β, u₀, u = m.β₀, m.β, m.u₀, m.u
     copy!(β, β₀)
     copy!.(u, u₀)
-    obj₀ = pdev(m)
+    obj₀ = pdev!(m)
     @show obj₀
     while iter < maxiter
         iter += 1
-        obj = pdev(evaluatecoef(m))
+        obj = pdev!(evaluatecoef(m))
         @show iter, obj₀, obj, extrema(β), map(extrema, u)
         nhalf = 0
         while obj > obj₀
@@ -153,7 +156,7 @@ function pirls!{T}(m::GeneralizedLinearMixedModel{T})
             end
             stephalve!(β, β₀)
             stephalve!.(u, u₀)
-            obj = pdev(m)
+            obj = pdev!(m)
             @show obj, nhalf
         end
         if isapprox(obj, obj₀; atol = 0.0001)
