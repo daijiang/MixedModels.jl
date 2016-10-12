@@ -17,7 +17,7 @@ Members:
 - `logd`: a copy of the logdet(LMM) with unit weights
 """
 
-type GeneralizedLinearMixedModel{T<:AbstractFloat} <: MixedModel
+immutable GeneralizedLinearMixedModel{T<:AbstractFloat} <: MixedModel
     LMM::LinearMixedModel{T}
     β::Vector{T}
     β₀::Vector{T}
@@ -27,7 +27,6 @@ type GeneralizedLinearMixedModel{T<:AbstractFloat} <: MixedModel
     u::Vector{Matrix{T}}
     u₀::Vector{Matrix{T}}
     resp::GLM.GlmResp
-    logd::T
 end
 
 fixef(m::GeneralizedLinearMixedModel) = m.β
@@ -52,10 +51,8 @@ function glmm(f::Formula, fr::AbstractDataFrame, d::Distribution, l::Link; wt=[]
             # fit a glm to the fixed-effects only
     gl = glm(LMM.wttrms[end - 1], y, d, l; wts = wts)
     β = coef(gl)
-    reweight!(LMM, gl.rr.wrkwt)
-    res = GeneralizedLinearMixedModel(LMM, β, similar(β), getθ(LMM), similar(y),
-        zeros.(u), u, zeros.(u), gl.rr, logdet(LMM))
-    LaplaceDeviance!(res)
+    res = GeneralizedLinearMixedModel(LMM, β, copy(β), getθ(LMM), similar(y),
+        zeros.(u), u, copy.(u), gl.rr)
     res
 end
 
@@ -73,20 +70,11 @@ is defined as the squared length of the conditional modes, `u`, plus the determi
 of `Λ'Z'ZΛ + 1`, plus the sum of the squared deviance residuals.
 """
 LaplaceDeviance(m::GeneralizedLinearMixedModel) =
-    sum(m.resp.devresid) + m.logd + mapreduce(sumabs2, +, m.u)
+    sum(m.resp.devresid) + logdet(m) + mapreduce(sumabs2, +, m.u)
 
-"""
-    LaplaceDeviance!(m::GeneralizedLinearMixedModel)
-
-Update `m.η`, `m.μ`, etc., install the working response and working weights in
-`m.LMM`, update `m.LMM.A` and `m.LMM.R`, then evaluate `LaplaceDeviance`.
-"""
-function LaplaceDeviance!(m::GeneralizedLinearMixedModel)
-    updateη!(m)
-    GLM.wrkresp(vec(m.LMM.trms[end]), GLM.updateμ!(m.resp, m.η))
-    #    GLM.wrkresp!(vec(m.LMM.trms[end]), m.resp)
-    reevaluateAend!(m.LMM)
-    LaplaceDeviance(m)
+function pdev(m::GeneralizedLinearMixedModel)
+    updateμ!(updateη!(m).resp)
+    sum(m.resp.devresid) + mapreduce(sumabs2, +, m.u)
 end
 
 function StatsBase.loglikelihood{T}(m::GeneralizedLinearMixedModel{T})
@@ -113,13 +101,28 @@ lowerbd(m::GeneralizedLinearMixedModel) = vcat(fill(-Inf, size(m.β)), lowerbd(m
 Update the linear predictor, `m.η`, from the offset and the `B`-scale random effects.
 """
 function updateη!(m::GeneralizedLinearMixedModel)
-    η, b, lm, r, u = m.η, m.b, m.LMM, m.resp, m.u
+    η, b, lm, u = m.η, m.b, m.LMM, m.u
     Λ, trms = lm.Λ, lm.trms
     A_mul_B!(η, trms[end - 1], m.β)
     for i in eachindex(b)
-        unscaledre!(η, trms[i], A_mul_B!(Λ[i], copy!(b[i], u[i])))
+        unscaledre!(η, trms[i], A_mul_B!(b[i], Λ[i], u[i]))
     end
     m
+end
+
+function evaluatecoef(m::GeneralizedLinearMixedModel)
+    lm, resp, β = m.LMM, m.resp, m.β
+    wrkresp(vec(lm.trms[end]), resp)
+#    reweight!(lm, resp.wrkwt)
+    cfactor!(lm)
+    fixef!(β, lm, true)
+    ranef!(m.u, β, lm, true)
+    m
+end
+
+function stephalve!{T}(v::AbstractArray{T}, v₀::AbstractArray{T})
+    v .+= v₀
+    v ./= 2
 end
 
 """
@@ -131,22 +134,14 @@ modes of the random effects and, optionally, the conditional estimates of the fi
 function pirls!{T}(m::GeneralizedLinearMixedModel{T})
     iter, maxiter, obj = 0, 10, T(-Inf)
     β₀, β, u₀, u = m.β₀, m.β, m.u₀, m.u
-    reweight!(m.LMM, m.resp.wrkwt)
-    fill!(β, 0)
-    copy!(β₀, β)
-    for i in eachindex(u)
-        fill!(u[i], 0)
-        fill!(u₀[i], 0)
-    end
-    obj₀ = LaplaceDeviance!(m)
+    copy!(β, β₀)
+    copy!.(u, u₀)
+    obj₀ = pdev(m)
     @show obj₀
     while iter < maxiter
         iter += 1
-        fixef!(β, m.LMM, true)
-        ranef!(u, β, m.LMM, true)      # solve for new values of u        @show u
-        @show iter, extrema(β), map(extrema, u)
-        obj = LaplaceDeviance!(m)      # update GLM vecs and evaluate Laplace approx
-        @show obj
+        obj = pdev(evaluatecoef(m))
+        @show iter, obj₀, obj, extrema(β), map(extrema, u)
         nhalf = 0
         while obj > obj₀
             nhalf += 1
@@ -156,26 +151,17 @@ function pirls!{T}(m::GeneralizedLinearMixedModel{T})
                 end
                 break
             end
-            map!(+, β, β₀)
-            β ./= 2
-            for i in eachindex(u)
-                ui = u[i]
-                ui₀ = u₀[i]
-                for j in eachindex(ui)
-                    ui[j] += ui₀[j]
-                    ui[j] /= 2
-                end
-            end
-            obj = LaplaceDeviance!(m)
+            stephalve!(β, β₀)
+            stephalve!.(u, u₀)
+            obj = pdev(m)
             @show obj, nhalf
         end
         if isapprox(obj, obj₀; atol = 0.0001)
             break
         end
         copy!(β₀, β)
-        broadcast(copy!, u₀, u)
+        copy!.(u₀, u)
         obj₀ = obj
-        reweight!(m.LMM, m.resp.wrkwt)
     end
     obj
 end
